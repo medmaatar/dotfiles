@@ -5,8 +5,8 @@ TOKEN="https://github.com/settings/tokens"
 USERNAME="medmaatar"
 
 # Create directory for repos
-mkdir -p ~/github
-cd ~/github
+mkdir -p ~/Work/github.com/maatarmed
+cd ~/Work/github.com/maatarmed
 
 echo "Fetching all repos (owned, collaborated, and member)..."
 
@@ -17,7 +17,7 @@ SKIPPED=0
 while true; do
   # type=all includes: owner, collaborator, and organization member repos
   REPOS=$(curl -s -H "Authorization: token $TOKEN" \
-    "https://api.github.com/user/repos?per_page=100&type=all&page=$PAGE" | \
+    "https://api.github.com/user/repos?per_page=100&type=all&page=$PAGE" |
     jq -r '.[].ssh_url')
 
   # Break if no more repos
@@ -36,7 +36,7 @@ while true; do
       git clone --quiet "$repo_url"
       ((CLONED++))
     fi
-  done <<< "$REPOS"
+  done <<<"$REPOS"
 
   ((PAGE++))
 done
@@ -44,3 +44,4 @@ done
 echo ""
 echo "✓ Done! Cloned: $CLONED | Updated: $SKIPPED"
 echo "Repos saved to: ~/github"
+
