@@ -1,19 +1,21 @@
 #!/bin/bash
 
 # --- CONFIGURATION ---
-# Replace these placeholders with your actual tokens and usernames
 GH_USER="medmaatar"
-
-GL_USER="maatarmed" # Change if your GitLab username is different
+GL_USER="maatarmed"
 BASE_DIR=~/Work/github.com/maatarmed
+
 # Load environment variables from the .env file
-# (Adjust the path if your .env file is saved somewhere else)
-if [ -f ".env" ]; then
+# (Checks both the BASE_DIR and the current directory to be safe)
+if [ -f "$BASE_DIR/.env" ]; then
+  source "$BASE_DIR/.env"
+elif [ -f ".env" ]; then
   source ".env"
 else
   echo "❌ Error: .env file not found! Please create it with your tokens."
   exit 1
 fi
+
 # Logging setup
 LOG_FILE="$BASE_DIR/sync_errors.log"
 
@@ -32,36 +34,61 @@ echo "--- Sync Run: $(date) ---" >>"$LOG_FILE"
 CREATED_GH=0
 CREATED_GL=0
 PROCESSED=0
+SKIPPED=0
 
 for folder in */; do
   [ -e "$folder" ] || continue
 
   repo_name="${folder%/}"
 
-  # --- NEW: Ignore the playground folder ---
+  # --- Ignore specific folders ---
   if [ "$repo_name" = "playground" ]; then
     echo "  → ⏭️ Skipping '$repo_name' directory..."
     continue
   fi
-  # -----------------------------------------
 
   echo "--------------------------------------------------"
   echo "📁 Processing: $repo_name"
-
   cd "$repo_name" || continue
 
-  # 1. Initialize local Git repo if it doesn't exist
+  # --- OWNERSHIP GUARD: Skip if you are not the owner ---
+  if [ -d ".git" ]; then
+    ORIGIN_URL=$(git config --get remote.origin.url 2>/dev/null)
+    if [ -n "$ORIGIN_URL" ]; then
+      if ! echo "$ORIGIN_URL" | grep -qiE "[:/]($GH_USER|$GL_USER)/"; then
+        echo "  → 🚫 Collaborator repo detected. Skipping personal sync..."
+        ((SKIPPED++))
+        cd "$BASE_DIR" || exit
+        continue
+      fi
+    fi
+  fi
+
+  # --- GIT INITIALIZATION & AUTO-COMMIT ---
   if [ ! -d ".git" ]; then
     echo "  → Local Git environment missing. Initializing..."
     git init -q
-    git checkout -q -b main
-    git add .
-    git commit -q -m "Initial commit" >>"$LOG_FILE" 2>&1
-  else
-    git branch -M main >>"$LOG_FILE" 2>&1
   fi
 
-  # 2. Check on GitHub
+  # Check if there are unstaged changes and auto-commit them
+  if [ -n "$(git status --porcelain)" ]; then
+    echo "  → Auto-committing uncompleted local changes..."
+    git add .
+    git commit -q -m "Auto-commit before sync: $(date +'%Y-%m-%d %H:%M')" >>"$LOG_FILE" 2>&1
+  fi
+
+  # Check if the repository is completely empty (no commits yet)
+  if ! git rev-parse HEAD >/dev/null 2>&1; then
+    echo "  → Repository is empty. Creating initial commit..."
+    touch .gitkeep
+    git add .gitkeep
+    git commit -q -m "Initial automated commit" >>"$LOG_FILE" 2>&1
+  fi
+
+  # Ensure the branch is strictly named 'main'
+  git branch -M main >>"$LOG_FILE" 2>&1
+
+  # --- CHECK & CREATE ON GITHUB ---
   GH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
     -H "Authorization: token $GH_TOKEN" \
     "https://api.github.com/repos/$GH_USER/$repo_name")
@@ -75,7 +102,7 @@ for folder in */; do
     ((CREATED_GH++))
   fi
 
-  # 3. Check on GitLab
+  # --- CHECK & CREATE ON GITLAB ---
   ENCODED_PATH="${GL_USER}%2F${repo_name}"
   GL_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
     -H "PRIVATE-TOKEN: $GL_TOKEN" \
@@ -90,7 +117,7 @@ for folder in */; do
     ((CREATED_GL++))
   fi
 
-  # 4. Configure Remotes
+  # --- CONFIGURE REMOTES ---
   GH_URL="git@github.com:$GH_USER/$repo_name.git"
   GL_URL="git@gitlab.com:$GL_USER/$repo_name.git"
 
@@ -106,24 +133,25 @@ for folder in */; do
     git remote add gitlab "$GL_URL"
   fi
 
-  # 5. Execute Push or Pull for GitHub
+  # --- EXECUTE PUSH/PULL ---
   echo "--- $repo_name (GitHub) ---" >>"$LOG_FILE"
   if [ "$GH_STATUS" -eq 404 ]; then
     echo "  → Pushing to GitHub..."
-    git push -u github main >>"$LOG_FILE" 2>&1 || echo "    ⚠️ GitHub push failed. Check sync_errors.log"
+    git push github main >>"$LOG_FILE" 2>&1 || echo "    ⚠️ GitHub push failed."
   else
-    echo "  → Repo exists on GitHub. Pulling..."
-    git pull github main >>"$LOG_FILE" 2>&1 || echo "    ⚠️ GitHub pull failed (possible conflict). Check sync_errors.log"
+    echo "  → Repo exists on GitHub. Syncing..."
+    git pull --rebase github main >>"$LOG_FILE" 2>&1
+    git push github main >>"$LOG_FILE" 2>&1
   fi
 
-  # 6. Execute Push or Pull for GitLab
   echo "--- $repo_name (GitLab) ---" >>"$LOG_FILE"
   if [ "$GL_STATUS" -eq 404 ]; then
     echo "  → Pushing to GitLab..."
-    git push -u gitlab main >>"$LOG_FILE" 2>&1 || echo "    ⚠️ GitLab push failed. Check sync_errors.log"
+    git push gitlab main >>"$LOG_FILE" 2>&1 || echo "    ⚠️ GitLab push failed."
   else
-    echo "  → Repo exists on GitLab. Pulling..."
-    git pull gitlab main >>"$LOG_FILE" 2>&1 || echo "    ⚠️ GitLab pull failed (possible conflict). Check sync_errors.log"
+    echo "  → Repo exists on GitLab. Syncing..."
+    git pull --rebase gitlab main >>"$LOG_FILE" 2>&1
+    git push gitlab main >>"$LOG_FILE" 2>&1
   fi
 
   ((PROCESSED++))
@@ -132,4 +160,4 @@ done
 
 echo "--------------------------------------------------"
 echo "✓ Sync Complete! Any errors are logged in $LOG_FILE"
-echo "Total processed: $PROCESSED | New GitHub Repos: $CREATED_GH | New GitLab Repos: $CREATED_GL"
+echo "Total processed: $PROCESSED | Skipped (Collaborator): $SKIPPED | New GitHub: $CREATED_GH | New GitLab: $CREATED_GL"
