@@ -6,7 +6,6 @@ GL_USER="maatarmed"
 BASE_DIR=~/Work/github.com/maatarmed
 
 # Load environment variables from the .env file
-# (Checks both the BASE_DIR and the current directory to be safe)
 if [ -f "$BASE_DIR/.env" ]; then
   source "$BASE_DIR/.env"
 elif [ -f ".env" ]; then
@@ -34,7 +33,7 @@ echo "--- Sync Run: $(date) ---" >>"$LOG_FILE"
 CREATED_GH=0
 CREATED_GL=0
 PROCESSED=0
-SKIPPED=0
+COLLAB_PULLED=0
 
 for folder in */; do
   [ -e "$folder" ] || continue
@@ -51,20 +50,36 @@ for folder in */; do
   echo "📁 Processing: $repo_name"
   cd "$repo_name" || continue
 
-  # --- OWNERSHIP GUARD: Skip if you are not the owner ---
+  # --- OWNERSHIP GUARD: If collaborator, ONLY pull ---
+  IS_COLLAB=false
   if [ -d ".git" ]; then
     ORIGIN_URL=$(git config --get remote.origin.url 2>/dev/null)
     if [ -n "$ORIGIN_URL" ]; then
       if ! echo "$ORIGIN_URL" | grep -qiE "[:/]($GH_USER|$GL_USER)/"; then
-        echo "  → 🚫 Collaborator repo detected. Skipping personal sync..."
-        ((SKIPPED++))
-        cd "$BASE_DIR" || exit
-        continue
+        IS_COLLAB=true
       fi
     fi
   fi
 
-  # --- GIT INITIALIZATION & AUTO-COMMIT ---
+  if [ "$IS_COLLAB" = true ]; then
+    echo "  → 🤝 Collaborator repo detected. Pulling updates only..."
+    echo "--- $repo_name (Collaborator Pull) ---" >>"$LOG_FILE"
+
+    # Auto-commit any unstaged changes to prevent pull conflicts
+    if [ -n "$(git status --porcelain)" ]; then
+      git add .
+      git commit -q -m "Auto-commit before collab pull: $(date +'%Y-%m-%d %H:%M')" >>"$LOG_FILE" 2>&1
+    fi
+
+    # Pull from the default upstream (usually 'origin')
+    git pull --rebase >>"$LOG_FILE" 2>&1 || echo "    ⚠️ Pull failed. Check sync_errors.log"
+
+    ((COLLAB_PULLED++))
+    cd "$BASE_DIR" || exit
+    continue
+  fi
+
+  # --- GIT INITIALIZATION & AUTO-COMMIT (For Personal Repos) ---
   if [ ! -d ".git" ]; then
     echo "  → Local Git environment missing. Initializing..."
     git init -q
@@ -160,4 +175,4 @@ done
 
 echo "--------------------------------------------------"
 echo "✓ Sync Complete! Any errors are logged in $LOG_FILE"
-echo "Total processed: $PROCESSED | Skipped (Collaborator): $SKIPPED | New GitHub: $CREATED_GH | New GitLab: $CREATED_GL"
+echo "Total Personal Repos: $PROCESSED | Collab Repos Pulled: $COLLAB_PULLED | New GitHub: $CREATED_GH | New GitLab: $CREATED_GL"
